@@ -11,8 +11,9 @@ let prevPhase = null;
 let myRole = null;
 let myDice = null;
 
-let actionDone = false; // Prevents doing action twice (night phase)
-let imReady = false;    // Have I clicked "Ready" for the current night step?
+let actionDone = false;    // Prevents doing action twice (night phase)
+let imReady = false;       // Have I clicked "Ready" for the current night step?
+let multiGoodAwake = false; // True when 2+ good players share the same wake-up slot
 
 // ── Helpers ──────────────────────────────
 function showPage(id) {
@@ -49,6 +50,7 @@ const btnJoin = document.getElementById('btn-join');
 
 // Lobby
 const btnCopy = document.getElementById('btn-copy');
+const btnLeave = document.getElementById('btn-leave');
 const btnReady = document.getElementById('btn-ready');
 const btnStart = document.getElementById('btn-start');
 
@@ -66,11 +68,19 @@ const btnBackHome = document.getElementById('btn-back-home');
 // Listeners
 // ═════════════════════════════════════════
 
+let selectedAvatar = '🐶';
+document.querySelectorAll('.avatar-option').forEach(el => {
+    el.addEventListener('click', () => {
+        document.querySelectorAll('.avatar-option').forEach(x => x.classList.remove('selected'));
+        el.classList.add('selected');
+        selectedAvatar = el.dataset.av;
+    });
+});
+
 btnCreate.addEventListener('click', () => {
     const name = iName.value.trim();
     if (!name) return toast('ใส่ชื่อก่อนครับ', 'error', '⚠️');
-    socket.emit('create_room', { name });
-    requestFullScreen();
+    socket.emit('create_room', { name, avatar: selectedAvatar });
 });
 
 btnJoin.addEventListener('click', () => {
@@ -78,8 +88,7 @@ btnJoin.addEventListener('click', () => {
     const code = iCode.value.trim().toUpperCase();
     if (!name) return toast('ใส่ชื่อก่อนครับ', 'error', '⚠️');
     if (code.length < 5) return toast('รหัสห้องต้องมี 5 ตัวอักษร', 'error', '⚠️');
-    socket.emit('join_room', { name, code });
-    requestFullScreen();
+    socket.emit('join_room', { name, code, avatar: selectedAvatar });
 });
 
 iName.addEventListener('keydown', e => {
@@ -92,6 +101,11 @@ iCode.addEventListener('input', e => e.target.value = e.target.value.toUpperCase
 btnCopy.addEventListener('click', () => {
     navigator.clipboard.writeText(currentRoom?.code || '').then(() => toast('คัดลอกรหัสแล้ว', 'success', '📋'));
 });
+btnLeave.addEventListener('click', () => {
+    if (confirm('ต้องการออกจากห้องหรือไม่?')) {
+        socket.emit('leave_room');
+    }
+});
 btnReady.addEventListener('click', () => socket.emit('toggle_ready'));
 btnStart.addEventListener('click', () => socket.emit('start_game'));
 
@@ -103,6 +117,9 @@ btnEndNight.addEventListener('click', () => { socket.emit('end_night'); });
 btnLightReady.addEventListener('click', () => {
     actionDone = true;
     socket.emit('night_action_done');
+    // Remove co-awake notice when going back to sleep
+    const notice = document.getElementById('co-awake-notice');
+    if (notice) notice.remove();
     renderNight(currentRoom);
 });
 
@@ -111,12 +128,6 @@ btnLightReady.addEventListener('click', () => {
 // Result
 btnPlayAgain.addEventListener('click', () => socket.emit('play_again'));
 btnBackHome.addEventListener('click', resetToLanding);
-
-function requestFullScreen() {
-    if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => { });
-    }
-}
 
 function resetToLanding() {
     currentRoom = null; myRole = null; myDice = null;
@@ -139,7 +150,7 @@ function renderLobby(room) {
 
     const amHost = room.hostId === myId;
     document.getElementById('lob-code').textContent = room.code;
-    document.getElementById('lob-count').textContent = `(${room.players.length}/8)`;
+    document.getElementById('lob-count').textContent = `(${room.players.length}/12)`;
 
     const list = document.getElementById('lob-players');
     list.innerHTML = '';
@@ -155,10 +166,19 @@ function renderLobby(room) {
         const div = document.createElement('div');
         div.className = 'player-item';
         div.innerHTML = `
-      <div class="player-avatar">${initials(p.name)}</div>
+      <div class="player-avatar">${p.avatar || initials(p.name)}</div>
       <div class="player-name">${escapeHtml(p.name)}${isMe ? ' <span style="color:var(--gold);font-size:0.8rem">(ฉัน)</span>' : ''}</div>
       <div class="player-badges">${badges.join('')}</div>
     `;
+
+        if (amHost && !isMe) {
+            const btnKick = document.createElement('button');
+            btnKick.textContent = '❌ เตะ';
+            btnKick.style.cssText = 'background:transparent; color:#ef4444; border:1px solid #ef4444; padding:2px 6px; border-radius:4px; font-size:10px; margin-left:8px; cursor:pointer; font-weight:bold;';
+            btnKick.onclick = () => { if (confirm(`เตะ ${p.name} ออกจากห้อง?`)) socket.emit('kick_player', { targetId: p.id }); };
+            div.querySelector('.player-badges').appendChild(btnKick);
+        }
+
         list.appendChild(div);
     });
 
@@ -238,6 +258,11 @@ function playNightIntro(room) {
                     diceB.textContent = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'][myDice] || '🎲';
                     txt.style.display = 'block';
                     txt.classList.add('intro-dice-pop');
+                    const memBox = document.getElementById('my-memory-box');
+                    if (memBox) {
+                        memBox.classList.remove('hidden');
+                        document.getElementById('mem-dice').textContent = (myDice ?? '?') + ':00';
+                    }
                     // Reveal OK button after a beat
                     setTimeout(() => {
                         okWrap.style.display = 'block';
@@ -303,6 +328,37 @@ function updateIntroStatus(room) {
     `;
 }
 
+// ── Co-Awake Bottom-Right Notice ──────────────────────
+function showCoAwakeNotice(awakePlayers, myRoleArg) {
+    const old = document.getElementById('co-awake-notice');
+    if (old) old.remove();
+
+    const others = awakePlayers.filter(p => p.id !== myId);
+    if (others.length === 0) return; // alone, no notice needed
+
+    const isEvil = myRoleArg !== 'good';
+    const notice = document.createElement('div');
+    notice.id = 'co-awake-notice';
+    notice.style.cssText = [
+        'position:fixed', 'bottom:20px', 'right:20px', 'z-index:300',
+        'background:rgba(0,0,0,0.88)', 'backdrop-filter:blur(10px)',
+        'border:1px solid ' + (isEvil ? 'rgba(255,140,0,0.6)' : 'rgba(100,200,255,0.45)'),
+        'border-radius:12px', 'padding:12px 16px',
+        'font-size:0.82rem', 'max-width:220px',
+        'box-shadow:0 4px 20px rgba(0,0,0,0.6)',
+        'animation:popIn 0.4s ease'
+    ].join(';');
+
+    notice.innerHTML = `
+        <div style="color:${isEvil ? 'var(--orange)' : '#7dd3fc'};font-weight:bold;margin-bottom:8px;font-size:0.88rem;">
+            ${isEvil ? '😈 ทีมโจรตื่นพร้อมกัน' : '👥 ตื่นมาพร้อมกัน'}
+        </div>
+        ${others.map(p => `<div style="color:#ddd;padding:2px 0;">⚡ ${escapeHtml(p.name)}</div>`).join('')}
+        ${!isEvil ? '<div style="color:#94a3b8;font-size:0.75rem;margin-top:6px;">ไม่สามารถแอบดูเวลาใครได้รอบนี้</div>' : ''}
+    `;
+    document.body.appendChild(notice);
+}
+
 function renderNight(room) {
     const amHost = room.hostId === myId;
     const me = room.players.find(p => p.id === myId);
@@ -355,10 +411,18 @@ function renderNight(room) {
     hostCtrl.style.display = (amHost && !amAwake && !isDawn) ? '' : 'none';
     awakeCtrl.classList.toggle('hidden', !amAwake || isDawn);
 
-    // Good player must peek first — disable Done button until actionDone
-    btnLightReady.disabled = (myRole === 'good' && !actionDone);
-    btnLightReady.style.opacity = (myRole === 'good' && !actionDone) ? '0.4' : '1';
-    btnLightReady.textContent = (myRole === 'good' && !actionDone)
+    // Remove co-awake notice when no longer awake
+    if (!amAwake || isDawn) {
+        const notice = document.getElementById('co-awake-notice');
+        if (notice) notice.remove();
+        if (!amAwake) multiGoodAwake = false;
+    }
+
+    // Good player must peek first — UNLESS multiple good woke together (skip peek)
+    const needsPeekFirst = myRole === 'good' && !actionDone && !multiGoodAwake;
+    btnLightReady.disabled = needsPeekFirst;
+    btnLightReady.style.opacity = needsPeekFirst ? '0.4' : '1';
+    btnLightReady.textContent = needsPeekFirst
         ? '👆 ดูเวลาตื่นเพื่อนก่อน แล้วค่อยกด'
         : '✅ เสร็จแล้ว แกล้งหลับต่อ';
 
@@ -438,12 +502,15 @@ function renderVote(room) {
             div.style.boxShadow = '0 0 12px #f87171';
         }
 
+        const isMe = p.id === myId;
         const votesForP = room.players.filter(x => x.votedFor === p.id).length;
         const hasCheese = room.cheeseHolderId === p.id ? '🧀 ' : '';
 
         div.innerHTML = `
-          ${hasCheese || initials(p.name)}
-          <div class="cp-name">${hasCheese}${escapeHtml(p.name)}${p.id === myId ? ' (ฉัน)' : ''}</div>
+          <div class="cp-av" style="${isMe ? 'border:2px solid var(--purple)' : ''}">
+            ${hasCheese || (p.avatar || initials(p.name))}
+          </div>
+          <div class="cp-name">${hasCheese}${escapeHtml(p.name)}${isMe ? ' (ฉัน)' : ''}</div>
           ${p.hasVoted ? '<div style="position:absolute;top:-6px;right:-6px;background:#4ade80;color:#000;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;box-shadow:0 2px 5px rgba(0,0,0,0.5);">✓</div>' : ''}
           ${votesForP > 0 ? `<div style="position:absolute;bottom:-12px;left:50%;transform:translateX(-50%);background:#f87171;color:#fff;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:bold;box-shadow:0 2px 8px rgba(248,113,113,0.5);border:2px solid #000;white-space:nowrap;z-index:2;">ถูกโหวต ${votesForP}</div>` : ''}
         `;
@@ -486,7 +553,7 @@ function renderResult(room) {
         const card = document.createElement('div');
         card.className = `res-card ${p.role}` + (p.id === caughtId ? ' caught' : '');
         card.innerHTML = `
-      <div class="res-av">${initials(p.name)}</div>
+      <div class="res-av">${p.avatar || initials(p.name)}</div>
       <div class="res-name">${escapeHtml(p.name)}${p.id === myId ? ' (ฉัน)' : ''}</div>
       <div class="res-role-chip ${p.role}">${getRoleName(p.role)}</div>
       <div class="res-dice">⏰ เวลาตื่น: ${p.dice ?? '?'}</div>
@@ -561,7 +628,7 @@ function buildNightCircle(roleInfo, room) {
         const hasCheese = room.cheeseHolderId === p.id ? '🧀 ' : '';
 
         div.innerHTML = `
-          ${hasCheese || mateRoleIcon || initials(p.name)}
+          ${hasCheese || mateRoleIcon || (p.avatar || initials(p.name))}
           <div class="cp-name">${hasCheese}${escapeHtml(p.name)}</div>
         `;
 
@@ -578,8 +645,8 @@ function buildNightCircle(roleInfo, room) {
             stageCircle.appendChild(trail);
         }
 
-        // Peek logic (only for Good) - check ANY player
-        if (roleInfo === 'good' && !actionDone && p.id !== myId) {
+        // Peek logic (only for Good, alone) — disabled when multiple good awake together
+        if (roleInfo === 'good' && !actionDone && !multiGoodAwake && p.id !== myId) {
             div.classList.add('peekable');
             div.addEventListener('click', () => {
                 if (actionDone) return;
@@ -607,13 +674,19 @@ function buildNightCircle(roleInfo, room) {
     }
 
     if (roleInfo === 'thief') {
+        const henchman = currentAwakePlayers.find(p => p.role === 'henchman');
+        const hmName = henchman ? escapeHtml(henchman.name) : null;
+        const hmText = hmName ? `<br><span style="font-size:0.95rem;color:var(--orange);margin-top:4px;display:block;">😈 ลูกสมุนของคุณที่ตื่นอยู่คือ: <b>${hmName}</b></span>` : '';
+
         if (isStolen || actionDone) {
-            txt.innerHTML = '✅ คุณแอบขโมยชีสมาแล้ว ซ่อนมันไว้ให้ดีล่ะ!';
+            txt.innerHTML = '✅ คุณแอบขโมยชีสมาแล้ว ซ่อนมันไว้ให้ดีล่ะ!' + hmText;
             // Make sure cheese is visually gone
             const c = document.getElementById('night-center-cheese');
             if (c) c.classList.add('stolen');
+            const memAction = document.getElementById('mem-action');
+            if (memAction && actionDone) memAction.innerHTML = '🧀 สเตตัส: <b style="color:var(--orange);">แอบขโมยชีสแล้ว</b>' + (hmName ? `<br>😈 ลูกสมุน: <b>${hmName}</b>` : '');
         } else {
-            txt.innerHTML = 'กำลังขโมยชีส... 🧀';
+            txt.innerHTML = 'กำลังขโมยชีส... 🧀' + hmText;
             if (!window._thiefStealing) {
                 window._thiefStealing = true;
                 setTimeout(() => {
@@ -646,7 +719,9 @@ function buildNightCircle(roleInfo, room) {
                             hand.style.transform = `translate(0px, 0px) rotate(0deg)`;
                             setTimeout(() => {
                                 hand.remove();
-                                if (freshTxt) freshTxt.innerHTML = '✅ ขโมยชีสเข้ากระเป๋าแล้ว! กด "เสร็จแล้ว" ด้านล่าง';
+                                if (freshTxt) freshTxt.innerHTML = '✅ ขโมยชีสเข้ากระเป๋าแล้ว! กด "เสร็จแล้ว" ด้านล่าง' + hmText;
+                                const memAction = document.getElementById('mem-action');
+                                if (memAction) memAction.innerHTML = '🧀 สเตตัส: <b style="color:var(--orange);">แอบขโมยชีสแล้ว</b>' + (hmName ? `<br>😈 ลูกสมุน: <b>${hmName}</b>` : '');
                                 window._thiefStealing = false;
                             }, 400);
                         }, 400);
@@ -661,8 +736,22 @@ function buildNightCircle(roleInfo, room) {
             (isStolen
                 ? `<div style="font-size:1.05rem">จอมโจรของคุณคือ: <b style="color:#f87171; font-size:1.2rem;">${thiefName}</b><br><span style="color:var(--text-dim);font-size:0.85rem;">(ชีสถูกขโมยไปแล้ว)</span></div>`
                 : `<div style="font-size:1.05rem">ช่วยเหลือจอมโจรของคุณ: <b style="color:#f87171; font-size:1.2rem;">${thiefName}</b><br><span style="color:var(--text-dim);font-size:0.85rem;">(เขากำลังแอบขโมยชีส)</span></div>`);
+        const memAction = document.getElementById('mem-action');
+        if (memAction) memAction.innerHTML = `😈 สมุนของโจร: <b style="color:#f87171;">${thiefName}</b>`;
     } else if (roleInfo === 'good') {
-        if (actionDone) {
+        if (multiGoodAwake) {
+            // Multiple good players awake — no peek allowed, show co-awake message
+            const others = currentAwakePlayers.filter(ap => ap.id !== myId);
+            const namesHtml = others.map(ap => `<b style="color:#7dd3fc">${escapeHtml(ap.name)}</b>`).join(', ');
+            const namesText = others.map(ap => escapeHtml(ap.name)).join(', ');
+            txt.innerHTML = `
+                <div style="font-size:1.05rem;color:#7dd3fc;font-weight:bold;margin-bottom:8px;">👥 คุณตื่นมาพร้อมกับ ${namesHtml}</div>
+                <div style="font-size:0.9rem;color:var(--text-dim);">เพราะตื่นมาพร้อมกัน จึงไม่สามารถแอบดูเวลาตื่นใครได้รอบนี้<br><span style="color:#94a3b8;">กด "เสร็จแล้ว" เพื่อแกล้งหลับต่อ</span></div>
+            `;
+            // Update memory box
+            const memAction = document.getElementById('mem-action');
+            if (memAction) memAction.innerHTML = `👥 ตื่นพร้อม: <b style="color:#7dd3fc;">${namesText}</b>`;
+        } else if (actionDone) {
             txt.innerHTML = '✅ ดูเวลาตื่นเรียบร้อยแล้ว! กดปุ่มด้านล่างเพื่อแกล้งหลับ';
         } else {
             txt.innerHTML = isStolen
@@ -697,6 +786,20 @@ socket.on('room_update', (room) => {
         actionDone = false;
         imReady = false;
         diceShown = false;
+        multiGoodAwake = false;
+        currentAwakePlayers = [];
+        const memAction = document.getElementById('mem-action');
+        if (memAction) memAction.innerHTML = '';
+    }
+
+    const memBox = document.getElementById('my-memory-box');
+    if (memBox) {
+        if ((incPhase === 'night' && diceShown) || incPhase === 'vote') {
+            memBox.classList.remove('hidden');
+            document.getElementById('mem-dice').textContent = (myDice ?? '?') + ':00';
+        } else {
+            memBox.classList.add('hidden');
+        }
     }
 
     currentRoom = room;
@@ -716,6 +819,9 @@ socket.on('your_turn', ({ role, step, awakePlayers }) => {
     if (!currentRoom) return;
     actionDone = false;
     currentAwakePlayers = awakePlayers || [];
+    // Detect multiple good players sharing the same wake-up slot
+    multiGoodAwake = role === 'good' && currentAwakePlayers.length > 1;
+    showCoAwakeNotice(currentAwakePlayers, role);
     renderNight(currentRoom);
 });
 
@@ -728,11 +834,16 @@ socket.on('all_ready_for_next_step', ({ step }) => {
 });
 
 socket.on('peek_result', ({ targetName, dice }) => {
+    if (multiGoodAwake) return; // blocked: multiple good players awake, peek not allowed
     const wakeH = String(dice).padStart(2, '0');
     const txt = document.getElementById('night-action-text');
     if (txt) {
         const msg = `<div class="peek-result" style="text-align:center;margin-bottom:10px;">👀 เวลาที่ <b>${escapeHtml(targetName)}</b> ตื่นคือ <b>${wakeH}:00 AM</b></div>`;
         txt.innerHTML = msg + txt.innerHTML;
+    }
+    const memAction = document.getElementById('mem-action');
+    if (memAction) {
+        memAction.innerHTML = `👀 ดู <b>${escapeHtml(targetName)}</b> = <b style="color:var(--yellow);">${wakeH}:00</b>`;
     }
 });
 
@@ -773,6 +884,15 @@ socket.on('night_end', () => {
 });
 
 
+
+socket.on('left_room', () => {
+    resetToLanding();
+});
+
+socket.on('kicked', () => {
+    resetToLanding();
+    setTimeout(() => toast('คุณถูกเตะออกจากห้อง', 'error', '⚠️'), 300);
+});
 
 // System text
 socket.on('chat', (msg) => {
