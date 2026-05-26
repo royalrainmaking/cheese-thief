@@ -17,6 +17,10 @@ const ROLE_CONFIGS = {
   6: ['thief', 'henchman', 'good', 'good', 'good', 'good'],
   7: ['thief', 'henchman', 'good', 'good', 'good', 'good', 'good'],
   8: ['thief', 'henchman', 'good', 'good', 'good', 'good', 'good', 'good'],
+  9: ['thief', 'henchman', 'good', 'good', 'good', 'good', 'good', 'good', 'good'],
+  10: ['thief', 'henchman', 'good', 'good', 'good', 'good', 'good', 'good', 'good', 'good'],
+  11: ['thief', 'henchman', 'good', 'good', 'good', 'good', 'good', 'good', 'good', 'good', 'good'],
+  12: ['thief', 'henchman', 'good', 'good', 'good', 'good', 'good', 'good', 'good', 'good', 'good', 'good'],
 };
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -72,6 +76,7 @@ function sanitize(room, forId) {
       return {
         id: p.id,
         name: p.name,
+        avatar: p.avatar || null,
         ready: p.ready,
         connected: p.connected,
         hasVoted: p.hasVoted,
@@ -107,18 +112,27 @@ function startNight(room) {
   const roles = shuffle(config);
   room.players.forEach((p, i) => { p.role = roles[i]; p.hasVoted = false; p.votedFor = null; });
 
-  // Dice: evil team (thief + henchman) share the SAME dice number -> wake together
+  // ── Dice assignment ─────────────────────────────────────────
+  // Evil team (thief + henchman) share ONE exclusive slot from 1-6.
+  // Good players are distributed via round-robin across the remaining 5 slots,
+  // guaranteeing:
+  //   1. Every player wakes up (dice always 1-6, nightStep covers 1-6)
+  //   2. No good player ever gets the evil slot (0 good players wake with thief)
+  //   3. Balanced distribution (e.g. 10 good + 5 slots → exactly 2 per slot)
   const evilPlayers = room.players.filter(p => p.role !== 'good');
   const goodPlayers = room.players.filter(p => p.role === 'good');
 
-  const allNums = shuffle(Array.from({ length: room.players.length }, (_, i) => i + 1));
-  const evilDice = allNums[0];
-  const goodDice = allNums.slice(1, 1 + goodPlayers.length);
+  const evilDice = Math.floor(Math.random() * 6) + 1; // pick a random slot 1-6 for evil
+  const goodSlots = shuffle([1, 2, 3, 4, 5, 6].filter(x => x !== evilDice)); // shuffled 5-slot pool
+
+  // Round-robin pool: repeat goodSlots until we cover all good players, then shuffle
+  const goodDicePool = shuffle(
+    Array.from({ length: goodPlayers.length }, (_, i) => goodSlots[i % goodSlots.length])
+  );
 
   evilPlayers.forEach(p => { p.dice = evilDice; });
-  goodPlayers.forEach((p, i) => { p.dice = goodDice[i]; });
+  goodPlayers.forEach((p, i) => { p.dice = goodDicePool[i]; });
 
-  // Sort the actual dice (for reference) but total steps are exactly 6 hours
   room.uniqueDice = [...new Set(room.players.map(p => p.dice))].sort((a, b) => a - b);
   room.totalNightSteps = 6;
 
@@ -212,7 +226,7 @@ io.on('connection', (socket) => {
   console.log('+ Connected:', socket.id);
 
   // ── Create room ────────────────────────────────────────
-  socket.on('create_room', ({ name }) => {
+  socket.on('create_room', ({ name, avatar }) => {
     if (!name?.trim()) return;
     const code = generateCode();
     rooms[code] = {
@@ -224,7 +238,7 @@ io.on('connection', (socket) => {
       roundResult: null,
       nightReadySet: new Set(),
       players: [{
-        id: socket.id, name: name.trim(),
+        id: socket.id, name: name.trim(), avatar: avatar || null,
         ready: false, role: null, dice: null,
         hasVoted: false, votedFor: null, connected: true,
       }],
@@ -236,15 +250,15 @@ io.on('connection', (socket) => {
   });
 
   // ── Join room ──────────────────────────────────────────
-  socket.on('join_room', ({ name, code }) => {
+  socket.on('join_room', ({ name, code, avatar }) => {
     const room = rooms[code?.toUpperCase()];
     if (!room) { socket.emit('error', { message: 'ไม่พบห้องนี้ กรุณาตรวจสอบรหัส' }); return; }
     if (room.phase !== 'lobby') { socket.emit('error', { message: 'เกมเริ่มไปแล้ว ไม่สามารถเข้าได้' }); return; }
-    if (room.players.length >= 8) { socket.emit('error', { message: 'ห้องเต็มแล้ว (สูงสุด 8 คน)' }); return; }
+    if (room.players.length >= 12) { socket.emit('error', { message: 'ห้องเต็มแล้ว (สูงสุด 12 คน)' }); return; }
     if (!name?.trim()) return;
 
     room.players.push({
-      id: socket.id, name: name.trim(),
+      id: socket.id, name: name.trim(), avatar: avatar || null,
       ready: false, role: null, dice: null,
       hasVoted: false, votedFor: null, connected: true,
     });
@@ -347,6 +361,9 @@ io.on('connection', (socket) => {
     for (const room of Object.values(rooms)) {
       const p = room.players.find(x => x.id === socket.id);
       if (p && room.phase === 'night' && p.role === 'good') {
+        // Block peek when multiple good players share this wake-up step
+        const coAwake = room.players.filter(x => x.dice === room.nightStep);
+        if (coAwake.length > 1) break; // more than 1 person awake → no peek allowed
         const target = room.players.find(x => x.id === targetId);
         if (target) {
           socket.emit('peek_result', { targetId, targetName: target.name, dice: target.dice });
@@ -410,6 +427,39 @@ io.on('connection', (socket) => {
         room.votes = {}; room.roundResult = null; room.cheeseHolderId = null;
         room.nightReadySet = new Set();
         broadcast(room);
+        break;
+      }
+    }
+  });
+
+  // ── Leave / Kick ─────────────────────────────────────────
+  function hardRemovePlayer(targetId, emitEvent) {
+    for (const room of Object.values(rooms)) {
+      const pIndex = room.players.findIndex(x => x.id === targetId);
+      if (pIndex !== -1) {
+        room.players.splice(pIndex, 1);
+        if (room.hostId === targetId && room.players.length > 0) {
+          room.hostId = room.players[0].id;
+        }
+        io.to(targetId).emit(emitEvent);
+        if (room.players.length === 0) {
+          delete rooms[room.code];
+        } else {
+          broadcast(room);
+        }
+        break;
+      }
+    }
+  }
+
+  socket.on('leave_room', () => {
+    hardRemovePlayer(socket.id, 'left_room');
+  });
+
+  socket.on('kick_player', ({ targetId }) => {
+    for (const room of Object.values(rooms)) {
+      if (room.hostId === socket.id && room.phase === 'lobby') {
+        hardRemovePlayer(targetId, 'kicked');
         break;
       }
     }
