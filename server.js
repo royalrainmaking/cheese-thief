@@ -401,18 +401,29 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ── Cast vote ──────────────────────────────────────────
-  socket.on('cast_vote', ({ targetId }) => {
+  // ── Select vote (can be changed) ───────────────────────
+  socket.on('select_vote', ({ targetId }) => {
     for (const room of Object.values(rooms)) {
       const p = room.players.find(x => x.id === socket.id);
       if (p && room.phase === 'vote' && !p.hasVoted && targetId !== socket.id) {
         const target = room.players.find(x => x.id === targetId);
         if (target) {
-          p.hasVoted = true;
           p.votedFor = targetId;
           broadcast(room);
-          if (room.players.every(x => x.hasVoted)) processVotes(room);
         }
+        break;
+      }
+    }
+  });
+
+  // ── Confirm vote (finalizes the choice) ──────────────────
+  socket.on('confirm_vote', () => {
+    for (const room of Object.values(rooms)) {
+      const p = room.players.find(x => x.id === socket.id);
+      if (p && room.phase === 'vote' && !p.hasVoted && p.votedFor) {
+        p.hasVoted = true;
+        broadcast(room);
+        if (room.players.every(x => x.hasVoted)) processVotes(room);
         break;
       }
     }

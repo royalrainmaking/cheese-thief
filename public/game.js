@@ -59,6 +59,9 @@ const btnCallNext = document.getElementById('btn-call-next');
 const btnEndNight = document.getElementById('btn-end-night');
 const btnLightReady = document.getElementById('btn-light-ready');
 
+// Vote
+const btnConfirmVote = document.getElementById('btn-confirm-vote');
+
 
 // Result
 const btnPlayAgain = document.getElementById('btn-play-again');
@@ -123,7 +126,12 @@ btnLightReady.addEventListener('click', () => {
     renderNight(currentRoom);
 });
 
-
+// Vote actions
+if (btnConfirmVote) {
+    btnConfirmVote.addEventListener('click', () => {
+        socket.emit('confirm_vote');
+    });
+}
 
 // Result
 btnPlayAgain.addEventListener('click', () => socket.emit('play_again'));
@@ -461,6 +469,12 @@ function renderVote(room) {
     const doneEl = document.getElementById('voted-done');
     doneEl.classList.toggle('hidden', !alreadyVoted);
 
+    const myVoteTarget = me?.votedFor;
+    const confirmWrap = document.getElementById('vote-confirm-wrap');
+    if (confirmWrap) {
+        confirmWrap.classList.toggle('hidden', alreadyVoted || !myVoteTarget);
+    }
+
     // Build the circle stage inside vote-circle-wrap
     const wrap = document.getElementById('vote-circle-wrap');
     if (!wrap) return; // guard: element not ready
@@ -482,7 +496,6 @@ function renderVote(room) {
 
     const stage = document.getElementById('vote-circle-stage');
     const myIdx = room.players.findIndex(x => x.id === myId);
-    const myVoteTarget = me?.votedFor;
 
     room.players.forEach((p, i) => {
         const relIdx = (i - myIdx + total) % total;
@@ -519,7 +532,7 @@ function renderVote(room) {
         if (!alreadyVoted && p.id !== myId) {
             div.classList.add('peekable');
             div.style.cursor = 'pointer';
-            div.addEventListener('click', () => socket.emit('cast_vote', { targetId: p.id }));
+            div.addEventListener('click', () => socket.emit('select_vote', { targetId: p.id }));
         }
         stage.appendChild(div);
     });

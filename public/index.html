@@ -41,7 +41,7 @@
           <div class="logo-icon">🧀</div>
           <h1 class="logo-title">Cheese Thief</h1>
           <p class="logo-sub">จอมโจรชีส</p>
-          <p class="logo-desc">เกมแนวปาร์ตี้ บลัฟ และจับโกหก<br />สำหรับ 4–12 คน · Real-Time Online</p>
+          <p class="logo-desc">เกมแนวปาร์ตี้ บลัฟ และจับโกหก<br />สำหรับ 4– คน · Real-Time Online</p>
         </div>
 
         <div class="landing-card" id="login-card">
@@ -195,9 +195,14 @@
       <!-- renderVote() injects the circle stage here -->
       <div id="vote-circle-wrap"></div>
 
+      <div id="vote-confirm-wrap" class="hidden" style="margin-top: 16px; text-align: center;">
+        <button id="btn-confirm-vote" class="btn btn-primary big-btn" style="padding: 12px 30px; font-size: 1.2rem;">✅
+          ยืนยันการโหวต</button>
+      </div>
+
       <div id="voted-done" class="my-vote-done hidden">
         <div class="voted-icon">✅</div>
-        <p>คุณส่งผลโหวตแล้ว กำลังรอผู้เล่นอื่น...</p>
+        <p>คุณยืนยันผลโหวตแล้ว กำลังรอผู้เล่นอื่น...</p>
       </div>
     </div>
   </div>
